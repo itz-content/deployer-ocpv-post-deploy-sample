@@ -1,0 +1,8 @@
+---
+- name: Perform magic with CP4D
+  hosts: localhost
+  connection: local
+  tasks:
+    - name: Deploy Showroom to Openshift
+      ansible.builtin.include_role:
+        name: showroom

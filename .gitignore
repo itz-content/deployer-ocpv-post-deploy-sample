@@ -1,0 +1,4 @@
+/output/*
+.ansible
+.vscode
+*local*

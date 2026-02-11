@@ -1,0 +1,108 @@
+---
+- name: Create namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ showroom_namespace }}"
+
+- name: Deploy showroom application
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: "{{ showroom_app_name }}"
+        namespace: "{{ showroom_namespace }}"
+        labels:
+          app: "{{ showroom_app_name }}"
+      spec:
+        replicas: 1
+        template:
+          metadata:
+            labels:
+              app: "{{ showroom_app_name }}"
+          spec:
+            initContainers:
+              - name: site-builder
+                image: "{{ showroom_antora_image }}"
+                command: ["/bin/sh", "-c"]
+                args:
+                  - |
+                    apk add git
+                    git clone {{ showroom_git_repo }} /src
+                    cd /src
+                    antora generate antora-playbook.yml --to-dir /web-data
+            containers:
+              - name: web-server
+                image: "{{ showroom_nginx_image }}"
+                ports:
+                  - containerPort: 8080
+                volumeMounts:
+                  - name: shared-html
+                    mountPath: /usr/share/nginx/html
+            volumes:
+              - name: shared-html
+                emptyDir: {}
+
+- name: Create service
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: "{{ showroom_app_name }}"
+        namespace: "{{ showroom_namespace }}"
+      spec:
+        selector:
+          app: "{{ showroom_app_name }}"
+        ports:
+          - port: 8080
+            targetPort: 8080
+
+- name: Create Openshift Route
+  kubernetes.core.k8s:
+    state: present
+    definition: 
+      apiVersion: route.openshift.io/v1
+      kind: Route
+      metadata:
+        name: "{{ showroom_app_name }}"
+        namespace: "{{ showroom_namespace }}"
+      spec:
+        to:
+          kind: Service
+          name: "{{ showroom_app_name }}"
+        port:
+          targetPort: 8080
+        tls:
+          termination: edge
+
+- name: Wait for Deployment to be Ready
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ showroom_app_name }}"
+        namespace: "{{ showroom_namespace }}"
+      register: deploy_res
+      until: 
+        - deploy_res.resources[0].status.availableReplicas is defined
+        - deploy_res.resources[0].status.availableReplicas | int > 0
+      retries: 120  
+      delay: 10
+
+- name: Get Route URL
+  kubernetes.core.k8s_info:
+    api_version: route.openshift.io/v1
+    kind: Route
+    name: "{{ showroom_app_name }}"
+    namespace: "{{ showroom_namespace }}"
+  register: route_res
+
+- name: Output Application URL
+  debug:
+    msg: "The Showroom is live at: https://{{ route_res.resources[0].spec.host }}"
