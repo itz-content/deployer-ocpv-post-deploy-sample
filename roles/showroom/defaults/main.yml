@@ -1,4 +1,4 @@
 ---
 showroom_namespace: "documentation"
 showroom_app_name: "example-app"
-showroom_antora_image: "quay.io/ibmtz/openshift-showroom:latest"
+showroom_antora_image: "docker.io/knickkennedy/openshift-showroom:latest"
