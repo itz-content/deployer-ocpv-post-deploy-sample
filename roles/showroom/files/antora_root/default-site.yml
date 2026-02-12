@@ -1,13 +1,14 @@
----
 site:
   title: "Introducing llm-d: Your Production-Ready Path to Scalable LLM Inference"
-  url: https://github.com/rhpds/llm-d-showroom
-  start_page: modules::index.adoc
+  # In the viewer, the internal URL should be root
+  url: /
+  # Fixed start_page syntax
+  start_page: ROOT:index.adoc
 
 content:
   sources:
     - url: .
-      start_path: content
+      branches: HEAD
 
 ui:
   bundle:
@@ -21,12 +22,13 @@ ui:
       contents: "static_files: [ .nojekyll ]"
 
 runtime:
-  cache_dir: ./.cache/antora
+  cache_dir: /tmp/.cache/antora
 
 antora:
   extensions:
-    - require: ./content/lib/dev-mode.js
+    - require: ./lib/dev-mode.js
       enabled: true
 
 output:
   dir: ./www
+  clean: true
