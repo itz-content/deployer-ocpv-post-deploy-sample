@@ -1,0 +1,49 @@
+= Workshop Overview: The ParasolCloud Challenge
+:toc:
+:toc-placement: preamble
+:icons: font
+
+== Your role
+
+You're a **Platform Engineer at ParasolCloud**, a SaaS company providing AI-powered customer service solutions. You've been assigned to solve a critical performance challenge before a major client expansion.
+
+== The business challenge
+
+ParasolCloud is experiencing rapid growth, but there's a problem threatening customer satisfaction:
+
+**The situation:**
+
+* **Current deployment**: Single vLLM instance serving an AI customer service chatbot
+* **The problem**: Slow, unpredictable response times during peak hours—especially for 5-10% of users
+* **Business impact**: Customer complaints about "the bot takes forever to respond" are increasing
+* **Upcoming deadline**: Major client expansion launching in 90 days will 4x traffic
+* **Risk**: Current infrastructure can't scale without making the worst-case user experience even worse
+
+**What your manager said:**
+
+"We're getting complaints about slow responses during peak hours—our most frustrated customers are waiting too long. Our current single-instance vLLM deployment isn't delivering consistent performance. We need you to evaluate llm-d to see if it can reduce tail latency and give our worst-case users a better experience."
+
+The executive team wants data: **Can we scale without making our slowest users even more frustrated?**
+
+== Your assignment
+
+Evaluate whether **llm-d** (an intelligent orchestration layer for distributed LLM inference) can solve ParasolCloud's tail latency problem.
+
+**Key question to answer**: Can llm-d deliver consistently low latency for all customers; especially the 5-10% currently experiencing the worst performance?
+
+== Why this matters
+
+ParasolCloud's current challenge reflects a common problem in production LLM deployments:
+
+* **Adding more GPUs improves capacity** (you can handle more requests)
+* **But it doesn't necessarily improve tail latency** (your worst-case users don't get faster responses)
+
+Without intelligent routing, each GPU operates independently with isolated KV caches. Similar requests hitting different GPUs repeat the same computation work, causing:
+
+* Unpredictable response times for users during peak hours
+* Wasted prefill computation for multi-turn conversations
+* Poor experience for customers with complex queries
+
+**llm-d's promise**: Cache-aware routing that directs similar requests to the same backend, maximizing KV cache reuse and dramatically reducing P95/P99 latency.
+
+**Your job**: Prove whether this works for ParasolCloud's real-world workload.

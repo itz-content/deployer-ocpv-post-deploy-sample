@@ -8,7 +8,23 @@
       metadata:
         name: "{{ showroom_namespace }}"
 
-- name: Deploy showroom application
+- name: Create PVC for Showroom storage
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: "{{ showroom_app_name }}-pvc"
+        namespace: "{{ showroom_namespace }}"
+      spec:
+        accessModes:
+          - ReadWriteOnce  # Only one Pod can write at a time
+        resources:
+          requests:
+            storage: 5Gi   # 1 Gigabyte is plenty for docs
+
+- name: Deploy Showroom application
   kubernetes.core.k8s:
     state: present
     definition:
@@ -17,8 +33,6 @@
       metadata:
         name: "{{ showroom_app_name }}"
         namespace: "{{ showroom_namespace }}"
-        labels:
-          app: "{{ showroom_app_name }}"
       spec:
         replicas: 1
         selector:
@@ -29,18 +43,6 @@
             labels:
               app: "{{ showroom_app_name }}"
           spec:
-            initContainers:
-              - name: content-cloner
-                image: docker.io/alpine/git:latest
-                command: ["/bin/sh", "-c"]
-                args:
-                  - |
-                    export HOME=/tmp
-                    rm -rf /data/.[!.]* /data/*
-                    git clone {{ showroom_git_repo }} /data
-                volumeMounts:
-                  - name: content-vol
-                    mountPath: /data
             containers:
               - name: engine
                 image: "{{ showroom_antora_image }}"
@@ -51,7 +53,29 @@
                     mountPath: /antora
             volumes:
               - name: content-vol
-                emptyDir: {}
+                persistentVolumeClaim:
+                  claimName: "{{ showroom_app_name }}-pvc"
+
+- name: Wait for Pod to be Running
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: "{{ showroom_namespace }}"
+    label_selectors:
+      - "app={{ showroom_app_name }}"
+  register: pod_list
+  until: 
+    - pod_list.resources | length > 0
+    - pod_list.resources[0].status.phase == "Running"
+  retries: 20
+  delay: 10
+
+- name: Sync files/content to the Pod's PVC
+  kubernetes.core.k8s_cp:
+    namespace: "{{ showroom_namespace }}"
+    pod: "{{ pod_list.resources[0].metadata.name }}"
+    local_path: "{{ role_path }}/files/content/"
+    remote_path: "/antora/"
+    state: push
 
 - name: Create service
   kubernetes.core.k8s:

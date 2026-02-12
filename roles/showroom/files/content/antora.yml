@@ -1,0 +1,21 @@
+name: modules
+title: Introducing llm-d
+version: master
+start_page: workshop/llm-d/00-index.adoc
+nav:
+  - modules/ROOT/nav.adoc
+
+asciidoc:
+  attributes:
+    lab_name: "I'm the lab_name var"
+    release-version: master
+    page-pagination: '@'
+    my_var: "foo"
+    guid: my-guid
+    ssh_user: devops
+    ssh_password: devops
+    ssh_command: ssh someone@example.com
+    openshift_cluster_ingress_domain: PLACEHOLDER-URL.com
+    page-links:
+    - url: https://redhat.com
+      text: Red Hat

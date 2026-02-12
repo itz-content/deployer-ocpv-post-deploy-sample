@@ -1,0 +1,653 @@
+= Module 1: Introduction & Core Concepts
+:source-highlighter: rouge
+:toc: macro
+:toclevels: 2
+
+You've learned about ParasolCloud's challenge: customer complaints about slow AI responses during peak periods, with a major client expansion in 90 days that will 4x traffic. Your assignment is to evaluate whether llm-d can reduce tail latency and improve the experience for the most frustrated users.
+
+Before deploying and benchmarking systems, you need to understand the technical fundamentals: what causes tail latency problems in LLM inference and how intelligent orchestration can solve them.
+
+**This module builds your conceptual foundation.** You'll learn what creates unpredictable P95/P99 latency, why naive scaling doesn't fix it, and how llm-d's cache-aware routing attacks the root causes.
+
+== Learning objectives
+
+By the end of this module, you'll be able to:
+
+* Deploy a generative AI model using KServe and vLLM ServingRuntime in OpenShift AI
+* Identify the three bottlenecks causing high tail latency in LLM inference
+* Explain how KV cache sharing eliminates redundant computation and reduces P95/P99 latency
+* Understand why adding more GPUs improves capacity but not tail latency
+* Describe how llm-d's cache-aware routing maximizes cache hits
+* Recognize which workload scenarios benefit most from intelligent orchestration
+* Articulate the value proposition in customer experience terms
+
+== Quick start: Deploy your model (do this first!)
+
+[NOTE]
+====
+**Start this deployment now** - it takes a few minutes to complete while the model is pulled and loaded.
+While it runs, continue reading the concepts below. We'll test the deployment at the end of this module.
+====
+
+=== Verify your environment
+
+First, confirm your OpenShift AI environment is ready:
+
+[.console-input]
+[source,bash]
+----
+# Verify you're logged into OpenShift
+oc whoami
+
+# Select your lab namespace
+oc project llm-d-project
+
+# Verify GPU node is available
+oc get nodes -l nvidia.com/gpu.present=true
+----
+
+Example output:
+
+[.console-output]
+[source,bash]
+----
+system:admin
+Now using project "llm-d-project" on server "https://api.cluster-fnj7b.fnj7b.sandbox5571.opentlc.com:6443".
+NAME                                        STATUS   ROLES                         AGE   VERSION
+ip-10-0-47-154.us-east-2.compute.internal   Ready    control-plane,master,worker   24h   v1.33.5
+----
+
+=== Create the vLLM ServingRuntime
+
+KServe uses ServingRuntimes to define how models are served. Create a vLLM-based ServingRuntime configuration:
+
+[.console-input]
+[source,bash]
+----
+cat << 'EOF' | oc apply -f-
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  annotations:
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+    opendatahub.io/runtime-version: v3.2.4
+    opendatahub.io/serving-runtime-scope: global
+    openshift.io/display-name: RHAIIS (vLLM) NVIDIA GPU ServingRuntime for KServe
+    openshift.io/template-display-name: RHAIIS (vLLM) NVIDIA GPU ServingRuntime for KServe
+    opendatahub.io/template-name: rhaiis-cuda-template
+  labels:
+    opendatahub.io/dashboard: "true"
+  name: rhaiis-cuda
+spec:
+  annotations:
+    prometheus.io/path: /metrics
+    prometheus.io/port: "8080"
+  containers:
+  - args:
+    - --port=8080
+    - --model=/mnt/models
+    - --served-model-name={{.Name}}
+    command:
+    - python
+    - -m
+    - vllm.entrypoints.openai.api_server
+    env:
+    - name: HF_HOME
+      value: /tmp/hf_home
+    - name: HF_HUB_OFFLINE
+      value: "1"
+    - name: VLLM_NO_USAGE_STATS
+      value: "1"
+    image: registry.redhat.io/rhaiis/vllm-cuda-rhel9:3.2.4
+    name: kserve-container
+    ports:
+    - containerPort: 8080
+      protocol: TCP
+  multiModel: false
+  supportedModelFormats:
+  - autoSelect: true
+    name: vLLM
+EOF
+----
+
+=== Create the InferenceService
+
+Now deploy the Llama 3.1 8B model using the vLLM runtime:
+
+[.console-input]
+[source,bash]
+----
+cat << 'EOF' | oc apply -f-
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: llama-vllm-single
+  annotations:
+    openshift.io/display-name: Llama 3.1 8B FP8 Single
+    security.opendatahub.io/enable-auth: "false"
+    serving.kserve.io/deploymentMode: RawDeployment
+    opendatahub.io/hardware-profile-name: accelerated-profile
+    opendatahub.io/hardware-profile-namespace: redhat-ods-applications
+spec:
+  predictor:
+    automountServiceAccountToken: false
+    maxReplicas: 1
+    minReplicas: 1
+    deploymentStrategy:
+      type: Recreate
+    model:
+      modelFormat:
+        name: vLLM
+      name: ''
+      resources:
+        limits:
+          cpu: '8'
+          memory: 16Gi
+          nvidia.com/gpu: '1'
+        requests:
+          cpu: '2'
+          memory: 8Gi
+          nvidia.com/gpu: '1'
+      runtime: rhaiis-cuda
+      storageUri: 'oci://registry.redhat.io/rhelai1/modelcar-llama-3-1-8b-instruct-fp8-dynamic:1.5'
+      args:
+        - --max-model-len=65536
+EOF
+----
+
+=== Monitor deployment (in background)
+
+Start watching the deployment status, then continue reading:
+
+[.console-input]
+[source,bash]
+----
+# Watch InferenceService status - press Ctrl+C when it shows READY=True
+oc get inferenceservice llama-vllm-single -w
+----
+
+[NOTE]
+====
+It takes a few minutes for the model to load and the state to change to "Ready".
+**Leave this running in your terminal and continue reading the concepts below.**
+We'll come back to test the deployment at the end of this module.
+====
+
+== Understanding LLM inference fundamentals
+
+=== The inference process: Prefill and Decode
+
+When a user submits a prompt to a language model, inference happens in two distinct phases:
+
+**Prefill Phase** (Processing the prompt):
+
+* Model processes the entire input prompt at once
+* Computes attention across all input tokens simultaneously
+* Generates the KV (Key-Value) cache for the prompt
+* High parallelism - uses GPU efficiently
+* Happens once per request
+
+**Decode Phase** (Generating the response):
+
+* Model generates output tokens one at a time
+* Each new token requires attending to all previous tokens
+* Lower parallelism - less GPU efficient
+* Happens repeatedly until response completes
+
+**Why this matters for latency**: These phases have different computational characteristics. Prefill is parallel and compute-intensive—but large prompts can block other requests from starting (head-of-line blocking). Decode is sequential and memory-bandwidth intensive. When a large prompt queues behind other long-running requests, that user experiences high P95/P99 latency.
+
+=== The KV cache: Memory for attention
+
+The KV (Key-Value) cache is a memory optimization that stores intermediate attention computations:
+
+**What it stores**:
+
+* Key and Value matrices from previous tokens
+* Allows new tokens to attend to history without recomputation
+
+**Memory characteristics**:
+
+* Grows linearly with sequence length
+* Can consume significant GPU memory (gigabytes for long contexts)
+* Limits how many concurrent requests a GPU can handle
+
+**Cache sharing opportunity**:
+
+* Multiple requests with similar prefixes (e.g., system prompts) can share KV cache entries
+* Eliminates redundant prefill computation
+* Dramatically reduces P95/P99 latency for queries with shared prefixes
+
+**ParasolCloud's latency challenge**: Customer service queries share common system prompts and context. Without intelligent cache management:
+
+* Each request recomputes the same large token system prompt (wasted prefill time)
+* Multi-turn conversations recompute entire context on every follow-up (unnecessary queuing)
+* Users with "unlucky" timing hit queues and experience high P95/P99 latency
+* Cache hits could eliminate this redundant work and reduce tail latency dramatically
+
+== What causes high tail latency? The bottlenecks
+
+Before understanding how llm-d fixes tail latency, you need to understand what creates it.
+
+=== Bottleneck 1: Prefill queuing (head-of-line blocking)
+
+**The problem**: Large prompts in the prefill queue block smaller requests from starting.
+
+**Scenario**: Single-turn requests with large system prompts
+
+* User A submits query with 2000-token system prompt at 10:00:00.000
+* User B submits query with 200-token prompt at 10:00:00.050 (50ms later)
+* User B must wait for User A's prefill to complete before their request starts
+* User A: TTFT = 800ms (normal for large prompt)
+* User B: TTFT = 1200ms (800ms waiting + 400ms processing) — **high P95 latency!**
+
+**Impact**: Unlucky users who submit requests during busy prefill periods experience high P95/P99 latency even though their own prompts are small.
+
+=== Bottleneck 2: KV cache misses (redundant computation)
+
+**The problem**: Requests with shared prefixes land on different vLLM instances, missing cache opportunities.
+
+**Scenario**: Multi-turn chat conversations
+
+* User conversation spread across multiple vLLM instances (round-robin load balancing)
+* Turn 1: Routes to GPU 1, computes full context (system prompt + history)
+* Turn 2: Routes to GPU 2, recomputes everything from scratch (cache miss)
+* Turn 3: Routes to GPU 3, recomputes everything again
+* Each turn wastes time recomputing the same shared context
+
+**Impact**: Multi-turn conversations experience unnecessarily high P95 latency because each turn starts from scratch instead of reusing cached context.
+
+=== Bottleneck 3: Unpredictable queuing variability
+
+**The problem**: Load balancing doesn't account for current request queue depth or prompt length distribution.
+
+**Scenario**: Peak traffic periods
+
+* Some vLLM instances accumulate long-running requests
+* New requests randomly routed to busy instances
+* Unlucky users hit deep queues → high P95/P99 latency
+* Lucky users hit idle instances → low latency
+
+**Impact**: Wide latency variance. P50 might be 200ms while P95 reaches 2000ms—a 10x difference.
+
+=== Two critical scenarios for ParasolCloud
+
+**Scenario 1: Single-turn requests with large shared prefixes**
+
+* Customer service queries all start with 300-token system prompt
+* Each query adds 100-200 tokens of user-specific question
+* **Problem**: Every request recomputes the same 300-token prefix
+* **P95 impact**: Prefill queuing causes high tail latency
+
+**Scenario 2: Multi-turn chat conversations**
+
+* Customer asks follow-up questions in ongoing conversation
+* Context grows with each turn: system prompt + turn 1 + turn 2 + ...
+* **Problem**: Each turn recomputes entire conversation history if cache misses occur
+* **P95 impact**: Cache misses dramatically increase tail latency for follow-ups
+
+=== Key performance metrics for tail latency
+
+Now that you understand the bottlenecks, here are the metrics you'll use to measure and compare performance:
+
+[cols="2,3,3", options="header"]
+|===
+|Metric |Definition |Why It Matters
+
+|**P95/P99 TTFT**
+|Time to First Token for slowest 5%/1% of requests
+|**Critical for tail latency.** High P95 TTFT = your most frustrated users wait too long to see any response.
+
+|**P95/P99 Total Latency**
+|End-to-end request time for slowest 5%/1%
+|**Your worst-case user experience.** This is what drives complaints and churn.
+
+|**TTFT** (Time to First Token)
+|Latency from request submission to first token generated
+|User-perceived responsiveness. Includes queuing time + prefill time.
+
+|**ITL** (Inter-Token Latency)
+|Time between consecutive output tokens
+|Affects streaming experience. High ITL makes responses appear to "stutter".
+
+|**Cache Hit Rate**
+|Percentage of KV cache reused vs. computed
+|**Directly reduces P95 latency.** Cache hits eliminate prefill queuing for shared prefixes.
+
+|**Throughput**
+|Requests processed per second
+|Capacity metric. Secondary to latency for customer experience.
+|===
+
+**ParasolCloud's latency goals**:
+
+* P95 TTFT < 300ms (currently experiencing 800-1200ms during peaks)
+* P99 TTFT < 500ms (currently experiencing 1500-2000ms during peaks)
+* Reduce tail latency without massive GPU investment
+
+== Introducing llm-d: Distributed inference orchestration
+
+llm-d is a distributed inference orchestration layer that sits above multiple vLLM instances, providing intelligent request routing and resource management specifically designed to reduce tail latency.
+
+=== llm-d architecture overview
+
+[source,text]
+----
+┌─────────────────────────────────────────────────────────┐
+│                     Client Requests                     │
+└─────────────────────┬───────────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────────┐
+│                   llm-d Orchestrator                    │
+│  ┌─────────────────────────────────────────────────┐   │
+│  │  Intelligent Request Router                     │   │
+│  │  - Prefix similarity analysis                   │   │
+│  │  - Cache-aware placement                        │   │
+│  │  - Load balancing                               │   │
+│  └─────────────────────────────────────────────────┘   │
+└──────────┬──────────┬──────────┬──────────┬─────────────┘
+           │          │          │          │
+           ▼          ▼          ▼          ▼
+    ┌──────────┐┌──────────┐┌──────────┐┌──────────┐
+    │ vLLM     ││ vLLM     ││ vLLM     ││ vLLM     │
+    │ Instance ││ Instance ││ Instance ││ Instance │
+    │ (GPU 1)  ││ (GPU 2)  ││ (GPU 3)  ││ (GPU 4)  │
+    └──────────┘└──────────┘└──────────┘└──────────┘
+----
+
+**Request flow**:
+
+1. Client sends request to llm-d endpoint
+2. llm-d analyzes prompt prefix
+3. Routes to vLLM instance with highest cache similarity
+4. vLLM processes request (reusing cached KV if available)
+5. llm-d returns response to client
+
+**Key insight**: From the client perspective, llm-d looks like a single vLLM endpoint. Behind the scenes, it orchestrates multiple instances intelligently.
+
+=== Core capability 1: Precise Prefix Cache Aware Routing
+
+**The problem**: Naive load balancing across vLLM instances treats all requests equally, ignoring KV cache state and causing cache misses.
+
+**llm-d's solution - Precise Prefix Cache Aware Routing**:
+
+* Analyzes prompt prefix similarity for each incoming request
+* Routes requests with shared prefixes to the same vLLM instance
+* Maximizes KV cache hit rates
+* Eliminates redundant prefill computation
+
+**Example - Single-turn shared prefix scenario**:
+
+* Request A: "You are a helpful customer service agent. User asks: How do I reset my password?"
+* Request B: "You are a helpful customer service agent. User asks: What are your business hours?"
+
+**Traditional load balancing** (round-robin):
+
+* Request A → GPU 1: Computes full 300-token prefix + 100-token question = 400ms TTFT
+* Request B → GPU 2: Recomputes 300-token prefix + 100-token question = 400ms TTFT
+* Both requests do redundant work
+
+**llm-d cache-aware routing**:
+
+* Request A → GPU 1: Computes full 300-token prefix + 100-token question = 400ms TTFT
+* Request B → GPU 1: **Cache hit on 300-token prefix**, only computes 100-token question = 150ms TTFT
+* Request B gets 60% faster response, dramatically reducing P95 latency
+
+**Example - Multi-turn conversation scenario**:
+
+**Traditional load balancing**:
+
+* Turn 1 → GPU 1: Computes system prompt + user question 1
+* Turn 2 → GPU 3: **Cache miss**, recomputes system prompt + question 1 + question 2
+* Turn 3 → GPU 2: **Cache miss**, recomputes entire conversation history
+* Each turn experiences high latency due to redundant computation
+
+**llm-d cache-aware routing**:
+
+* Turn 1 → GPU 1: Computes system prompt + user question 1
+* Turn 2 → GPU 1: **Cache hit**, only computes question 2
+* Turn 3 → GPU 1: **Cache hit**, only computes question 3
+* Follow-up turns respond much faster, reducing P95 latency for conversations
+
+**P95 latency impact**: Eliminates cache misses, reducing P95/P99 TTFT by 40-60% for workloads with shared prefixes or multi-turn conversations.
+
+=== Core capability 2: Prefill/Decode disaggregation
+
+**The problem**: Prefill (parallel) and decode (sequential) compete for GPU resources on same instance, reducing efficiency.
+
+**llm-d's solution**:
+
+* Separate vLLM instances specialized for prefill or decode
+* Prefill instances handle prompt processing (high compute)
+* Decode instances handle token generation (high memory bandwidth)
+* KV cache transferred between instances
+
+**Benefits**:
+
+* Prefill instances can use larger batch sizes
+* Decode instances optimize for low latency
+* Better GPU utilization per phase
+
+**When it helps**: Large batches, long contexts, latency-sensitive applications.
+
+**ParasolCloud's scenario**: Customer service queries have moderate prefixes (200-500 tokens) and short responses (50-200 tokens). Precise Prefix Cache Aware Routing provides more value than disaggregation for this workload. Disaggregation becomes critical for longer contexts (4K+ tokens).
+
+=== Core capability 3: Wide expert parallelism (for MoE models)
+
+**The problem**: Mixture of Experts (MoE) models like DeepSeek R1 have many expert networks. Standard tensor parallelism splits experts across devices, creating communication bottlenecks.
+
+**llm-d's solution - Expert Parallelism + Data Parallelism**:
+
+* Distribute complete experts across devices (EP)
+* Replicate token batches for data parallelism (DP)
+* Reduce inter-device communication
+* Scale efficiently to 100+ experts
+
+**When it helps**: MoE models with many experts (DeepSeek R1, Mixtral, Grok).
+
+**ParasolCloud's scenario**: Starting with dense models (Llama 3.1). Wide expert parallelism becomes relevant when evaluating MoE models for cost efficiency.
+
+== Comparing naive scaling vs. llm-d
+
+[cols="3,4,4", options="header"]
+|===
+|Aspect |Naive vLLM Scaling |llm-d with Cache-Aware Routing
+
+|**Request routing**
+|Round-robin or random
+|Prefix-aware, cache-optimized
+
+|**Cache utilization**
+|20-30% hit rate (isolated caches)
+|60-80% hit rate (intelligent routing)
+
+|**P95/P99 TTFT**
+|**No improvement** - more GPUs don't fix tail latency
+|**40-60% reduction** - cache hits eliminate redundant prefill
+
+|**Multi-turn conversations**
+|**Each turn recomputes context** (cache misses)
+|**Follow-ups reuse cached context** (cache hits)
+
+|**Single-turn shared prefixes**
+|**Every request recomputes prefix**
+|**Prefix cached, only unique portions computed**
+
+|**Throughput**
+|Linear scaling (4 GPUs = 4x capacity)
+|Similar capacity with better latency
+
+|**Setup complexity**
+|Deploy multiple vLLM + load balancer
+|Deploy llm-d + configure backends
+
+|**Customer experience**
+|Capacity increases, but P95 latency stays high
+|**Dramatically better experience for most frustrated users**
+|===
+
+**Key insight for tail latency**: Adding more GPUs with naive scaling increases *capacity* (more requests per second) but does **not** reduce *tail latency* (P95/P99). Cache misses still occur, causing high latency for unlucky users. llm-d's cache-aware routing directly attacks the tail latency problem by eliminating redundant computation through intelligent cache reuse.
+
+== Test your deployment
+
+Your model deployment should be ready by now. Let's verify it's working correctly.
+
+=== Check deployment status
+
+[.console-input]
+[source,bash]
+----
+# Check the InferenceService is ready
+oc get inferenceservice llama-vllm-single
+----
+
+You should see `READY` showing `True`:
+
+[.console-output]
+[source,bash]
+----
+NAME                URL                                                                  READY   PREV   LATEST   PREVROLLEDOUTREVISION   LATESTREADYREVISION   AGE
+llama-vllm-single   http://llama-vllm-single-predictor.llm-d-project.svc.cluster.local   True                                                                  5m
+----
+
+=== Test the model
+
+Port-forward to the instance and test it:
+
+[.console-input]
+[source,bash]
+----
+# Port forward to the pod
+oc port-forward deployment/llama-vllm-single-predictor 8080:8080 &
+----
+
+[NOTE]
+====
+Press **Enter** to get back to the command prompt after starting the port-forward.
+====
+
+Check the models endpoint:
+
+[.console-input]
+[source,bash]
+----
+# Check the list of models
+curl http://localhost:8080/v1/models | jq .
+----
+
+Example output:
+
+[.console-output]
+[source,bash]
+----
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "llama-vllm-single",
+      "object": "model",
+      "created": 1764775080,
+      "owned_by": "vllm",
+      "root": "/mnt/models",
+      "parent": null,
+      "max_model_len": 65536,
+      ...
+    }
+  ]
+}
+----
+
+Now test inference:
+
+[.console-input]
+[source,bash]
+----
+# Send a test request to the model
+curl http://localhost:8080/v1/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "llama-vllm-single",
+    "prompt": "San Francisco is a",
+    "max_tokens": 50,
+    "temperature": 0.7
+  }' | jq .
+----
+
+Example output:
+
+[.console-output]
+[source,bash]
+----
+{
+  "id": "cmpl-3e58a92a36bd4336b767a26bb089d0df",
+  "object": "text_completion",
+  "created": 1764775084,
+  "model": "llama-vllm-single",
+  "choices": [
+    {
+      "index": 0,
+      "text": " top tourist destination in the United States, attracting millions of visitors each year...",
+      "logprobs": null,
+      "finish_reason": "length"
+    }
+  ],
+  ...
+}
+----
+
+Your single vLLM instance is up and running successfully!
+
+[NOTE]
+====
+Keep the port-forward running—you'll need it in the next module for benchmarking.
+====
+
+== Module 1 summary
+
+You've completed the conceptual foundation for understanding and reducing tail latency in LLM inference, and deployed your first model.
+
+**What you accomplished:**
+
+* Deployed Llama 3.1 8B Instruct using KServe and vLLM on a single GPU
+* Verified the model is serving requests correctly
+
+**What you learned:**
+
+* **Tail latency (P95/P99)** represents the experience of your most frustrated users
+* **Three main bottlenecks** cause high tail latency:
+  - Prefill queuing (head-of-line blocking from large prompts)
+  - KV cache misses (redundant computation on every request)
+  - Unpredictable queuing variability (unlucky routing to busy instances)
+* **Two critical scenarios** reveal tail latency problems:
+  - Single-turn requests with large shared prefixes
+  - Multi-turn chat conversations requiring KV cache reuse
+* **llm-d's cache-aware routing** eliminates redundant computation by directing similar requests to the same vLLM instance
+
+**Key takeaways:**
+
+* **More GPUs ≠ better P95/P99**: Naive scaling increases capacity but doesn't reduce tail latency
+* **Cache hits reduce P95 latency**: 70% cache hit rate eliminates 70% of redundant prefill work
+* **Intelligent routing attacks tail latency directly**: Routes requests to maximize cache reuse
+* **Customer experience focus**: Improving P95/P99 means improving experience for your most frustrated users
+
+**ParasolCloud's tail latency opportunity:**
+
+* Customer service workload has 300-token system prompt shared across queries
+* Multi-turn conversations currently recompute entire history on each turn
+* Expected 60-80% cache hit rate with llm-d → Dramatically reduced P95/P99 TTFT
+* Goal: Reduce P95 TTFT from 800-1200ms to <300ms
+
+**Understanding the difference:**
+
+* **Scaling for capacity**: Add more GPUs → More requests/second
+* **Scaling for latency**: Intelligent cache-aware routing → Faster responses for worst-case users
+
+**Next steps:**
+
+Module 2 will establish your **tail latency baseline** by running comprehensive benchmarks on your deployed model across two scenarios:
+
+1. **Single-turn large prompts** - Measuring prefill bottleneck impact on P95
+2. **Multi-turn chat** - Measuring cache miss impact on conversation latency
+
+You'll measure P50, P95, and P99 latency to understand what your most frustrated users currently experience.
