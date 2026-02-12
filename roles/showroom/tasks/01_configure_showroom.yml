@@ -75,7 +75,7 @@
     pod: "{{ pod_list.resources[0].metadata.name }}"
     local_path: "{{ role_path }}/files/content/"
     remote_path: "/antora/"
-    state: push
+    state: to_pod
 
 - name: Create service
   kubernetes.core.k8s:
