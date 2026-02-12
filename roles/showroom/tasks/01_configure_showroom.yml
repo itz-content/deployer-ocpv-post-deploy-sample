@@ -72,6 +72,17 @@
   retries: 20
   delay: 10
 
+- name: Set Pod name variable
+  set_fact:
+    target_pod_name: "{{ pod_list.resources[0].metadata.name }}"
+
+- name: Prepare PVC for Antora
+  kubernetes.core.k8s_exec:
+    namespace: "{{ showroom_namespace }}"
+    pod: "{{ target_pod_name }}"
+    command: >-
+      /bin/sh -c "rm -rf /antora/* /antora/.[!.]* && git init /antora && git config --global user.email 'you@example.com' && git config --global user.name 'Your Name'"
+
 - name: Sync files/content to the Pod's PVC
   kubernetes.core.k8s_cp:
     namespace: "{{ showroom_namespace }}"
