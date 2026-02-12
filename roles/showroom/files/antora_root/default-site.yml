@@ -5,7 +5,9 @@ site:
 
 content:
   sources:
-    - url: ./content
+    - url: .
+      branches: master
+      start_path: content
 
 ui:
   bundle:
