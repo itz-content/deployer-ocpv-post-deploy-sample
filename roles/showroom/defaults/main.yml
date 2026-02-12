@@ -2,3 +2,4 @@
 showroom_namespace: "documentation"
 showroom_app_name: "example-app"
 showroom_antora_image: "docker.io/knickkennedy/openshift-showroom:latest"
+showroom_openshift_console_url: ""

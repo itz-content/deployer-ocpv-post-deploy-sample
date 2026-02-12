@@ -34,8 +34,7 @@ You have been provided with an OpenShift cluster for this workshop. Use the foll
 Open the OpenShift web console in your browser:
 
 * **Console URL:** link:{openshift_console_url}[{openshift_console_url},window=_blank]
-* **Username:** {openshift_cluster_admin_username}
-* **Password:** {openshift_cluster_admin_password}
+* **Documentation Namespace:** {openshift_documentation_namespace}
 
 == Your ParasolCloud scenario
 
