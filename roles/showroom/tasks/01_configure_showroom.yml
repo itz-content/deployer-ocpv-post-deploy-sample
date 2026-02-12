@@ -46,6 +46,9 @@
             containers:
               - name: engine
                 image: "{{ showroom_antora_image }}"
+                env:
+                  - name: NPM_CONFIG_CACHE
+                    value: /tmp/.npm
                 ports:
                   - containerPort: 8080
                 volumeMounts:
