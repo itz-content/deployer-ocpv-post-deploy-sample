@@ -21,6 +21,9 @@
           app: "{{ showroom_app_name }}"
       spec:
         replicas: 1
+        selector:
+          matchLabels:
+            app: "{{ showroom_app_name }}"
         template:
           metadata:
             labels:
