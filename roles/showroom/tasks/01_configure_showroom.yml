@@ -81,7 +81,7 @@
     namespace: "{{ showroom_namespace }}"
     pod: "{{ target_pod_name }}"
     command: >-
-      /bin/sh -c "rm -rf /antora/* /antora/.[!.]* && git init /antora && git config --global user.email 'you@example.com' && git config --global user.name 'Your Name'"
+      /bin/sh -c "rm -rf /antora/* /antora/.[!.]*"
 
 - name: Sync files/content to the Pod's PVC
   kubernetes.core.k8s_cp:
@@ -90,19 +90,6 @@
     local_path: "{{ role_path }}/files/antora_root/"
     remote_path: "/antora/"
     state: to_pod
-
-- name: Commit files to master branch
-  kubernetes.core.k8s_exec:
-    namespace: "{{ showroom_namespace }}"
-    pod: "{{ target_pod_name }}"
-    command: >-
-      /bin/sh -c "git config --global --add safe.directory /antora && 
-      cd /antora && 
-      git config user.email 'showroom@example.com' && 
-      git config user.name 'Showroom Builder' && 
-      (git checkout master || git checkout -b master) &&
-      git add . && 
-      git commit -m 'Update documentation content'"
 
 - name: Create service
   kubernetes.core.k8s:
