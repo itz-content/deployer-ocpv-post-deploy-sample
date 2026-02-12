@@ -30,25 +30,27 @@
               app: "{{ showroom_app_name }}"
           spec:
             initContainers:
-              - name: site-builder
-                image: "{{ showroom_antora_image }}"
+              - name: content-cloner
+                image: registry.access.redhat.com/ubi8/ubi:latest
                 command: ["/bin/sh", "-c"]
                 args:
                   - |
-                    apk add git
-                    git clone {{ showroom_git_repo }} /src
-                    cd /src
-                    antora generate antora-playbook.yml --to-dir /web-data
+                    export HOME=/tmp
+                    git clone {{ showroom_git_repo }} /data
+                    chmod -R 777 /data
+                volumeMounts:
+                  - name: content-vol
+                    mountPath: /data
             containers:
-              - name: web-server
-                image: "{{ showroom_nginx_image }}"
+              - name: engine
+                image: "{{ showroom_antora_image }}"
                 ports:
                   - containerPort: 8080
                 volumeMounts:
-                  - name: shared-html
-                    mountPath: /usr/share/nginx/html
+                  - name: content-vol
+                    mountPath: /antora
             volumes:
-              - name: shared-html
+              - name: content-vol
                 emptyDir: {}
 
 - name: Create service

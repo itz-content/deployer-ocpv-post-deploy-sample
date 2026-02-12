@@ -2,6 +2,5 @@
 showroom_namespace: "documentation"
 showroom_app_name: "example-app"
 
-showroom_git_repo: "https://github.com/rhpds/llm-d-showroom.git"
-showroom_antora_image: "antora/antora:3.1.4"
-showroom_nginx_image: "nginxinc/nginx-unprivileged:stable-alpine"
+showroom_git_repo: "https://github.ibm.com/itz-content/deployer-openshift-showroom-example-webpage.git"
+showroom_antora_image: "quay.io/ibmtz/openshift-showroom:latest"
