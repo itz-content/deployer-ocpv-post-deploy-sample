@@ -31,13 +31,11 @@
           spec:
             initContainers:
               - name: content-cloner
-                image: registry.access.redhat.com/ubi8/ubi:latest
+                image: registry.redhat.io/rhel8/git:latest
                 command: ["/bin/sh", "-c"]
                 args:
                   - |
-                    export HOME=/tmp
                     git clone {{ showroom_git_repo }} /data
-                    chmod -R 777 /data
                 volumeMounts:
                   - name: content-vol
                     mountPath: /data
