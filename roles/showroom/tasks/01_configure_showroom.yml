@@ -96,10 +96,11 @@
     namespace: "{{ showroom_namespace }}"
     pod: "{{ target_pod_name }}"
     command: >-
-      /bin/sh -c "cd /antora && 
+      /bin/sh -c "git config --global --add safe.directory /antora && 
+      cd /antora && 
       git config user.email 'showroom@example.com' && 
       git config user.name 'Showroom Builder' && 
-      git checkout -b master || git checkout master &&
+      (git checkout master || git checkout -b master) &&
       git add . && 
       git commit -m 'Update documentation content'"
 
