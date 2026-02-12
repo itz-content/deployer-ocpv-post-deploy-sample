@@ -3,7 +3,7 @@ title: Introducing llm-d
 version: master
 start_page: ROOT:index.adoc
 nav:
-  - ROOT:nav.adoc
+  - nav.adoc
 
 asciidoc:
   attributes:
