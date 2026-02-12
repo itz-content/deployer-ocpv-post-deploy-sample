@@ -104,6 +104,12 @@
       git commit -m 'Initial commit' &&
       git checkout -b master || git checkout master"
 
+- name: Poke the watcher to rebuild
+  kubernetes.core.k8s_exec:
+    namespace: "{{ showroom_namespace }}"
+    pod: "{{ target_pod_name }}"
+    command: touch /antora/default-site.yml
+
 - name: Create service
   kubernetes.core.k8s:
     state: present
