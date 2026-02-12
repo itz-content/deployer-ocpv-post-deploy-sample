@@ -83,17 +83,17 @@
           termination: edge
 
 - name: Wait for Deployment to be Ready
-      kubernetes.core.k8s_info:
-        api_version: apps/v1
-        kind: Deployment
-        name: "{{ showroom_app_name }}"
-        namespace: "{{ showroom_namespace }}"
-      register: deploy_res
-      until: 
-        - deploy_res.resources[0].status.availableReplicas is defined
-        - deploy_res.resources[0].status.availableReplicas | int > 0
-      retries: 120  
-      delay: 10
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ showroom_app_name }}"
+    namespace: "{{ showroom_namespace }}"
+  register: deploy_res
+  until: 
+    - deploy_res.resources[0].status.availableReplicas is defined
+    - deploy_res.resources[0].status.availableReplicas | int > 0
+  retries: 120  
+  delay: 10
 
 - name: Get Route URL
   kubernetes.core.k8s_info:
