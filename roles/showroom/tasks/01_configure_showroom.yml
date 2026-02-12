@@ -86,10 +86,22 @@
 - name: Sync files/content to the Pod's PVC
   kubernetes.core.k8s_cp:
     namespace: "{{ showroom_namespace }}"
-    pod: "{{ pod_list.resources[0].metadata.name }}"
+    pod: "{{ target_pod_name }}"
     local_path: "{{ role_path }}/files/antora_root/"
     remote_path: "/antora/"
     state: to_pod
+
+- name: Commit files to master branch
+  kubernetes.core.k8s_exec:
+    namespace: "{{ showroom_namespace }}"
+    pod: "{{ target_pod_name }}"
+    command: >-
+      /bin/sh -c "cd /antora && 
+      git config user.email 'showroom@example.com' && 
+      git config user.name 'Showroom Builder' && 
+      git checkout -b master || git checkout master &&
+      git add . && 
+      git commit -m 'Update documentation content'"
 
 - name: Create service
   kubernetes.core.k8s:
