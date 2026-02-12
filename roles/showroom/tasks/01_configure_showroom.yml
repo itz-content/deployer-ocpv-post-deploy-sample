@@ -76,7 +76,7 @@
   kubernetes.core.k8s_cp:
     namespace: "{{ showroom_namespace }}"
     pod: "{{ pod_list.resources[0].metadata.name }}"
-    local_path: "{{ role_path }}/files/content/"
+    local_path: "{{ role_path }}/files/antora_root/"
     remote_path: "/antora/"
     state: to_pod
 
